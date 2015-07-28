@@ -254,12 +254,22 @@ sub parse_current_variant {
     }
     if (defined $genotype_pos) {
         $vcf->{current_variant}{genotypes} =
-            [map{my @h = split /[;:]/,$_;
+            [map {
+                my $dosage = 0;
+                if (1 == substr $_,0,1) {
+                    $dosage++;
+                }
+                if (substr($_,2,1) == 1) {
+                    $dosage++;
+                }
+                $dosage;
+            }
+             map{my @h = split /[;:]/,$_;
                  $h[$genotype_pos];
              } @row[9..$#row]
             ];
     } else {
-        $vcf->{current_variant}{genotypes} = [(undef) x (@row-9)];
+        $vcf->{current_variant}{genotypes} = [(0) x (@row-9)];
     }
     return;
 }
@@ -268,13 +278,18 @@ sub parse_current_variant {
 sub determine_sample_ordering {
     my ($vcf_info,$sample_ordering) = @_;
     my %samples;
+    my %samples_by_file;
     for my $i (0..$#{$vcf_info}) {
         my $vcf = $vcf_info->[$i];
         my @samples = @{$vcf->{header}}[9..$#{$vcf->{header}}];
         push @{$samples{$_}},$i for @samples;
+        $samples_by_file{$i} = [@samples];
     }
     $sample_ordering->{order} = [sort keys %samples];
+    @{$sample_ordering->{sample_to_order}}{@{$sample_ordering->{order}}}
+        = 0..$#{$sample_ordering->{order}};
     $sample_ordering->{mapping} = \%samples;
+    $sample_ordering->{mapping_by_file} = \%samples_by_file;
     print STDERR "determined sample ordering\n" if $DEBUG;
 }
 
@@ -334,7 +349,7 @@ sub output_current_variant {
     }
     print STDERR "chr $min_chr " if $DEBUG;
     my $min_pos;
-    my %files_in_pos_and_chr;
+    my @files_in_pos_and_chr;
     for my $i (@files_in_chr) {
         if (defined $vcf_info->[$i]{current_variant} and
             defined $vcf_info->[$i]{current_variant}{POS}) {
@@ -349,9 +364,9 @@ sub output_current_variant {
             }
             if ($cmp == 1) {
                 $min_pos = $vcf_info->[$i]{current_variant}{POS};
-                %files_in_pos_and_chr = ();
+                @files_in_pos_and_chr = ();
             }
-            $files_in_pos_and_chr{$i} = 1;
+            push @files_in_pos_and_chr,$i;
         }
     }
     print STDERR "pos $min_pos " if $DEBUG;
@@ -359,42 +374,21 @@ sub output_current_variant {
     ## samples we need to output; lets output it
     my %files_used;
     my @genotypes;
-    for my $i (0..$#{$sample_ordering->{order}}) {
+    for my $file (@files_in_pos_and_chr) {
         ## we're going to assume that calls which are not here are
         ## reference; we'll probably have to do something fancier for
         ## real data (maybe NA) to account for areas with lack of
         ## coverage, but for the time being, lets just do this.
-#        print STDERR "sample $sample_ordering->{order}[$i] " if $min_pos > 1;
-        my @files = grep {$files_in_pos_and_chr{$_}}
-            @{$sample_ordering->{mapping}{$sample_ordering->{order}[$i]}};
-#        print STDERR "in files @files\n" if $min_pos > 1;
-        # p $sample_ordering->{mapping} if $min_pos > 1;
-        next unless @files;
-        if (@files > 1) {
-            die "Multiple files have the same sample identifier at this position".
-                " chr $min_chr pos $min_pos $sample_ordering->{order}[$i]";
+
+        my $genotypes = $vcf_info->[$file]{current_variant}{genotypes};
+        for my $i (0..$#{$genotypes}) {
+            next unless defined $genotypes->[$i] and $genotypes->[$i] > 0;
+            push @genotypes,($sample_ordering->{sample_to_order}{
+                $sample_ordering->{mapping_by_file}{$file}[$i]}+1)." ".$genotypes->[$i];
         }
-        $files_used{$files[0]} = 1;
-        my $col_pos = $vcf_info->[$files[0]]{sample_order}{$sample_ordering->{order}[$i]};
-        my $genotypes = $vcf_info->[$files[0]]{current_variant}{genotypes}[$col_pos];
-        next unless defined $genotypes;
-        if ($genotypes =~ /^[0\.][\|\/][0\.]$/o) {
-            next;
-        }
-        my $dosage;
-        if ($genotypes =~ /^(?:[0\.][\|\/]1|1[\|\/][0\.])$/o) {
-            $dosage = 1;
-        } elsif ($genotypes =~ /^1[\|\/]1$/o) {
-            $dosage = 2;
-        } else {
-            ## we probably should do something else here, but I'm
-            ## going to punt for the time being.
-            next;
-        }
-        push @genotypes,"$col_pos $dosage";
     }
     print STDERR "advancing files @{[sort keys %files_used]} " if $DEBUG > 2;
-    for my $i (keys %files_used) {
+    for my $i (@files_in_pos_and_chr) {
         $vcf_info->[$i]{current_line} = undef;
     }
     print STDERR "output ".scalar(@genotypes)." variants." if $DEBUG;
@@ -405,6 +399,9 @@ sub output_current_variant {
     }
     return unless @genotypes;
     print {$output} join(' ',@genotypes)."\n";
+    if ($min_pos > 100000) {
+        exit 0;
+    }
     ## what about multiple different variants in the same position?
     ## Need to deal with them
 
