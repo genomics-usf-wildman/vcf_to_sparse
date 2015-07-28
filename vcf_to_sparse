@@ -399,9 +399,6 @@ sub output_current_variant {
     }
     return unless @genotypes;
     print {$output} join(' ',@genotypes)."\n";
-    if ($min_pos > 100000) {
-        exit 0;
-    }
     ## what about multiple different variants in the same position?
     ## Need to deal with them
 
